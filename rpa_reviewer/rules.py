@@ -278,24 +278,27 @@ class ErrorHandlingRule(Rule):
             )
         )
 
+        # CP 2: Specific Exceptions (Business / System)
         if not self.business_exceptions and not self.system_exceptions:
             status2 = "N/A"
             comment2 = "No explicit Business or System exceptions detected."
         else:
             status2 = "PASS"
-            parts = []
+            lines = []
 
             if self.business_exceptions:
-                parts.append(
-                    "Business Exceptions:\n- " + "\n- ".join(sorted(self.business_exceptions))
-                )
+                lines.append("Business Exceptions:")
+                for exc in sorted(self.business_exceptions):
+                    lines.append(f"- {exc}")
 
             if self.system_exceptions:
-                parts.append(
-                    "System Exceptions:\n- " + "\n- ".join(sorted(self.system_exceptions))
-                )
+                if lines:
+                    lines.append("")  # blank line between sections
+                lines.append("System Exceptions:")
+                for exc in sorted(self.system_exceptions):
+                    lines.append(f"- {exc}")
 
-            comment2 = "\n".join(parts)
+            comment2 = "\n".join(lines)
 
         area.add_checkpoint(
             CheckpointResult(
