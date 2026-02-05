@@ -233,26 +233,36 @@ class ErrorHandlingRule(Rule):
         self.system_exceptions = set()
 
     def process_workflow(self, workflow_data):
-            name = workflow_data["name"]
-            txt = workflow_data["text_content"]
+        name = workflow_data["name"]
+        txt = workflow_data["text_content"]
 
-            # Existing rule
-            if "InvokeWorkflowFile" in txt and "TryCatch" not in txt:
-                self.missing_trycatch.append(name)
+        # Existing check
+        if "InvokeWorkflowFile" in txt and "TryCatch" not in txt:
+            self.missing_trycatch.append(name)
 
-            # -------- Business Exceptions --------
-            if "BusinessRuleException" in txt:
-                self.business_exceptions.add("BusinessRuleException")
+        # --------------------------------------------------
+        # Extract Throw exception type + message
+        # --------------------------------------------------
+        throw_matches = re.findall(
+            r'<Throw[^>]+Exception="\[New\s+([A-Za-z0-9_.]+)\((.*?)\)\]"',
+            txt,
+            re.DOTALL
+        )
 
-            if re.search(r"Throw.*Business", txt, re.IGNORECASE):
-                self.business_exceptions.add("Custom Business Exception")
+        for exc_type, raw_msg in throw_matches:
+            # Clean message
+            msg = raw_msg.replace("&quot;", "").strip()
 
-            # -------- System Exceptions --------
-            if "System.Exception" in txt or "ApplicationException" in txt:
-                self.system_exceptions.add("System.Exception")
+            # Remove variable concatenations
+            msg = re.sub(r'\+.*?\+', ' <dynamic> ', msg)
+            msg = re.sub(r'\s+', ' ', msg)
 
-            if "Rethrow" in txt:
-                self.system_exceptions.add("Rethrow")
+            final_msg = f"{exc_type} : {msg}"
+
+            if exc_type.endswith("BusinessRuleException"):
+                self.business_exceptions.add(final_msg)
+            else:
+                self.system_exceptions.add(final_msg)
 
     def get_result(self):
         area = AreaResult(self.category)
@@ -270,22 +280,22 @@ class ErrorHandlingRule(Rule):
 
         if not self.business_exceptions and not self.system_exceptions:
             status2 = "N/A"
-            comment2 = "No explicit business or system exceptions detected automatically."
+            comment2 = "No explicit Business or System exceptions detected."
         else:
             status2 = "PASS"
             parts = []
 
             if self.business_exceptions:
                 parts.append(
-                    f"Business Exceptions: {', '.join(sorted(self.business_exceptions))}"
+                    "Business Exceptions:\n- " + "\n- ".join(sorted(self.business_exceptions))
                 )
 
             if self.system_exceptions:
                 parts.append(
-                    f"System Exceptions: {', '.join(sorted(self.system_exceptions))}"
+                    "System Exceptions:\n- " + "\n- ".join(sorted(self.system_exceptions))
                 )
 
-            comment2 = " | ".join(parts)
+            comment2 = "\n".join(parts)
 
         area.add_checkpoint(
             CheckpointResult(
