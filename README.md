@@ -1,25 +1,41 @@
-# Implementation Plan - RPA Code Reviewer
+## Overview
+I have designed and implemented a **Strict RPA Code Reviewer** that provides clear **Pass / Fail** compliance metrics.
 
-**Goal Description**  
-Add Overall Pass/Fail counts and Percentage to the Strict Review Model.
+## Components
+- **Backend (FastAPI)**: Analyzes UiPath projects and calculates compliance statistics.
+- **Frontend (React + Vite)**: Displays a premium dashboard with a summary header and detailed tables.
 
-**Proposed Changes**  
-Backend Implementation  
-[MODIFY] `rpa_reviewer/server.py`  
-Iterate through `area_results`.  
-Count checkpoints with `status = "PASS"` and `status = "FAIL"`.  
-Calculate percentage using the formula:  
-`(pass / (pass + fail)) * 100`.  
-Include the following structure in the API response:  
-`{ areas: [...], stats: { pass: int, fail: int, percentage: str } }`.
+## Verification
 
-Frontend Implementation  
-[MODIFY] `ui/src/App.jsx`  
-Add a Summary Bar or Cards at the top of the results section displaying:  
-Pass Count (Green),  
-Fail Count (Red),  
-Overall Compliance Percentage.
+### 1. Run Backend
+```bash
+python -m rpa_reviewer.server
+```
+### 2. Run Frontend
+```bash
+cd ui
+npm run dev
+```
+### 3. Usage
+- Open the Web UI.
+- Select required Categories.
+- Click **Analyze Project.**
 
-**Verification Plan**  
-Backend: Verify the API returns correct pass, fail, and percentage values.  
-Frontend: Verify the UI correctly displays the returned statistics.
+- View Results:
+  - **Header:** Shows Passed count, Failed count, and Overall Compliance Percentage.
+  - **Detailed Reports:** Displays checkpoint tables for each review Area.
+
+**Logic**
+
+**Pass Count:** Number of checkpoints marked as Pass
+
+**Fail Count:** Number of checkpoints marked as Fail
+
+**Percentage Calculation:**
+```code
+(Passed / (Passed + Failed)) * 100
+```
+**Note:** N/A results are ignored in all calculations.
+
+```code
+If you want this **even more minimal** (single paragraph style, no sub-headings at all), tell me and I’ll rewrite it exactly like that 👍
