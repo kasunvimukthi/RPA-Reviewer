@@ -86,12 +86,26 @@ class ProjectAnalyzer:
                              if name:
                                  arguments.append({'name': name, 'direction': direction})
 
-            # Extract Activities
+            # Extract Activities (filtered)
+            IGNORE_TAGS = {
+                "Sequence",
+                "Flowchart",
+                "StateMachine",
+                "Members",
+                "Variable",
+                "Property",
+                "VisualBasic.Settings",
+                "TextExpression.ReferencesForImplementation"
+            }
+
             activities = []
             for elem in root.iter():
                 tag = stripped_tag(elem.tag)
-                if tag not in ["Variable", "Property", "Members", "VisualBasic.Settings", "TextExpression.ReferencesForImplementation"]:
-                    activities.append({'type': tag})
+
+                if tag in IGNORE_TAGS:
+                    continue
+
+                activities.append({'type': tag})
 
             workflow_data = {
                 'name': filename,
