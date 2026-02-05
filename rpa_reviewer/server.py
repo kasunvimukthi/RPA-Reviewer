@@ -19,6 +19,7 @@ app.add_middleware(
 class AnalyzeRequest(BaseModel):
     path: str
     active_rules: Optional[List[str]] = None
+    include_framework: bool = True
 
 @app.get("/health")
 def health_check():
@@ -33,7 +34,11 @@ def analyze_project(request: AnalyzeRequest):
     print(f"Analyzing: {project_path} with rules: {request.active_rules}")
     
     try:
-        analyzer = ProjectAnalyzer(project_path, active_rules=request.active_rules)
+        analyzer = ProjectAnalyzer(
+            project_path, 
+            active_rules=request.active_rules,
+            include_framework=request.include_framework
+        )
         area_results = analyzer.analyze()
         
         # Calculate Overall Stats

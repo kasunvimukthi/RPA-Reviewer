@@ -233,6 +233,14 @@ class ErrorHandlingRule(Rule):
     def __init__(self):
         super().__init__("Error Handling & Exception Management")
         self.missing_trycatch = []
+        self.nested_trycatch = []
+        self.empty_catch_blocks = []
+        self.missing_throw_in_catch = []
+        self.retry_mechanisms = []
+        self.incorrect_business_exception_handling = []
+        self.incorrect_system_exception_handling = []
+        self.catch_without_logging = []
+        self.has_trycatch_blocks = False
         self.business_exceptions = set()
         self.system_exceptions = set()
 
@@ -243,6 +251,139 @@ class ErrorHandlingRule(Rule):
         # Rule 1: Invoke without Try-Catch
         if "InvokeWorkflowFile" in txt and "TryCatch" not in txt:
             self.missing_trycatch.append(name)
+
+        # Rule 2: Nested TryCatch (TryCatch inside TryCatch)
+        # Look for TryCatch blocks that contain another TryCatch
+        trycatch_pattern = r'<TryCatch[^>]*>.*?</TryCatch>'
+        trycatch_blocks = re.findall(trycatch_pattern, txt, re.DOTALL)
+        
+        # Track if TryCatch exists
+        if "TryCatch" in txt:
+            self.has_trycatch_blocks = True
+        
+        for block in trycatch_blocks:
+            # Check if this TryCatch block contains another TryCatch
+            if block.count("<TryCatch") > 1:
+                self.nested_trycatch.append(name)
+                break
+
+        # Rule 3: Empty Catch Blocks
+        # Pattern: <Catch> ... </Catch> where there's no activity inside
+        catch_pattern = r'<Catch[^>]*>(.*?)</Catch>'
+        catch_blocks = re.findall(catch_pattern, txt, re.DOTALL)
+        for catch_content in catch_blocks:
+            # Check if catch block is empty or only contains whitespace/metadata
+            # Remove common metadata tags and whitespace
+            cleaned = re.sub(r'<sap:WorkflowViewStateService\.ViewState>.*?</sap:WorkflowViewStateService\.ViewState>', '', catch_content, flags=re.DOTALL)
+            cleaned = re.sub(r'<sap2010:WorkflowViewState\.IdRef>.*?</sap2010:WorkflowViewState\.IdRef>', '', cleaned)
+            cleaned = cleaned.strip()
+            
+            # If no meaningful content remains, it's empty
+            if not cleaned or cleaned.count('<') == 0:
+                self.empty_catch_blocks.append(name)
+                break
+
+        # Rule 4: Catch Blocks without Throw Activity
+        # Check if TryCatch exists and has Catch blocks without Throw
+        if "TryCatch" in txt:
+            for catch_content in catch_blocks:
+                # Check if this catch block has a Throw activity
+                if "Throw" not in catch_content and catch_content.strip():
+                    # Make sure it's not an empty block (already caught by Rule 3)
+                    cleaned = re.sub(r'<sap:WorkflowViewStateService\.ViewState>.*?</sap:WorkflowViewStateService\.ViewState>', '', catch_content, flags=re.DOTALL)
+                    cleaned = re.sub(r'<sap2010:WorkflowViewState\.IdRef>.*?</sap2010:WorkflowViewState\.IdRef>', '', cleaned)
+                    cleaned = cleaned.strip()
+                    
+                    if cleaned and cleaned.count('<') > 0:
+                        self.missing_throw_in_catch.append(name)
+                        break
+
+        # Rule 5: Retry Mechanisms Detection
+        # Check for Retry, DoWhile, and While activities
+        retry_activities = []
+        if "RetryScope" in txt or "ui:RetryScope" in txt or "<Retry" in txt:
+            retry_activities.append("Retry")
+        if "DoWhile" in txt or "ui:DoWhile" in txt:
+            retry_activities.append("DoWhile")
+        if "<While" in txt and "DoWhile" not in txt:
+            retry_activities.append("While")
+        
+        
+        if retry_activities:
+            self.retry_mechanisms.append(f"{name} ({', '.join(retry_activities)})")
+
+        # Rule 6: Business vs System Exception Handling in Catch Blocks
+        # Check if catch blocks throw appropriate exceptions based on caught exception type
+        # Pattern: <Catch x:TypeArguments="ExceptionType">...<Throw>...</Throw>...</Catch>
+        catch_with_type_pattern = r'<Catch\s+x:TypeArguments="([^"]+)"[^>]*>(.*?)</Catch>'
+        catch_with_types = re.findall(catch_with_type_pattern, txt, re.DOTALL)
+        
+        for exception_type, catch_content in catch_with_types:
+            # Determine if this is a business or system exception based on the caught type
+            is_business_catch = "BusinessRuleException" in exception_type
+            is_system_catch = not is_business_catch and "Exception" in exception_type
+            
+            # Extract throw statements from the catch block
+            # Pattern 1: Attribute-based Throw
+            attr_throw_pattern = r'<Throw[^>]+Exception="\[New\s+([A-Za-z0-9_.]+)\('
+            attr_throws = re.findall(attr_throw_pattern, catch_content)
+            
+            # Pattern 2: CSharpValue-based Throw
+            csharp_throw_pattern = r'<CSharpValue[^>]*>\s*new\s+([A-Za-z0-9_.]+)\('
+            csharp_throws = re.findall(csharp_throw_pattern, catch_content)
+            
+            all_throws = attr_throws + csharp_throws
+            
+            # Validate business exception handling
+            if is_business_catch and all_throws:
+                # Business catch should throw BusinessRuleException
+                has_business_throw = any("BusinessRuleException" in throw_type for throw_type in all_throws)
+                if not has_business_throw:
+                    self.incorrect_business_exception_handling.append(
+                        f"{name} (Catches {exception_type}, throws {', '.join(all_throws)})"
+                    )
+            
+            # Validate system exception handling
+            elif is_system_catch and all_throws:
+                # System catch should throw system exception (not BusinessRuleException)
+                has_business_throw = any("BusinessRuleException" in throw_type for throw_type in all_throws)
+                if has_business_throw:
+                    self.incorrect_system_exception_handling.append(
+                        f"{name} (Catches {exception_type}, throws {', '.join(all_throws)})"
+                    )
+
+        # Rule 7: Logging in Catch Blocks
+        # Check if catch blocks have logging activities (LogMessage, WriteLine, AddLogFields, etc.)
+        # Pattern: <Catch ...>...</Catch>
+        catch_pattern = r'<Catch[^>]*>(.*?)</Catch>'
+        catch_blocks_content = re.findall(catch_pattern, txt, re.DOTALL)
+        
+        catch_without_log_count = 0
+        for catch_content in catch_blocks_content:
+            # Check for common logging activities
+            has_logging = any([
+                "LogMessage" in catch_content,
+                "ui:LogMessage" in catch_content,
+                "WriteLine" in catch_content,  # For debugging/logging
+                "AddLogFields" in catch_content,
+                "ui:AddLogFields" in catch_content,
+                # Could also check for custom logging activities
+            ])
+            
+            # Only count non-empty catch blocks
+            # Remove metadata to check if it has actual activities
+            cleaned = re.sub(r'<sap:WorkflowViewStateService\.ViewState>.*?</sap:WorkflowViewStateService\.ViewState>', '', catch_content, flags=re.DOTALL)
+            cleaned = re.sub(r'<sap2010:WorkflowViewState\.IdRef>.*?</sap2010:WorkflowViewState\.IdRef>', '', cleaned)
+            cleaned = cleaned.strip()
+            
+            # If catch block has content but no logging
+            if cleaned and cleaned.count('<') > 0 and not has_logging:
+                catch_without_log_count += 1
+        
+        if catch_without_log_count > 0:
+            self.catch_without_logging.append(f"{name} ({catch_without_log_count} catch block(s) without logging)")
+
+
 
         # ==================================================
         # Pattern 1: Attribute-based Throw
@@ -284,6 +425,7 @@ class ErrorHandlingRule(Rule):
     def get_result(self):
         area = AreaResult(self.category)
 
+
         area.add_checkpoint(
             CheckpointResult(
                 1,
@@ -295,7 +437,43 @@ class ErrorHandlingRule(Rule):
             )
         )
 
-        # CP 2: Specific Exceptions (Business / System)
+        # CP 2: Nested TryCatch blocks
+        area.add_checkpoint(
+            CheckpointResult(
+                2,
+                "Are nested Try-Catch blocks avoided?",
+                "PASS" if not self.nested_trycatch else "FAIL",
+                "No nested Try-Catch blocks detected."
+                if not self.nested_trycatch
+                else f"Nested Try-Catch found in: {', '.join(self.nested_trycatch[:3])}..."
+            )
+        )
+
+        # CP 3: Empty Catch blocks
+        area.add_checkpoint(
+            CheckpointResult(
+                3,
+                "Are all Catch blocks non-empty?",
+                "PASS" if not self.empty_catch_blocks else "FAIL",
+                "All Catch blocks have content."
+                if not self.empty_catch_blocks
+                else f"Empty Catch blocks found in: {', '.join(self.empty_catch_blocks[:3])}..."
+            )
+        )
+
+        # CP 4: Throw Activity in Catch blocks
+        area.add_checkpoint(
+            CheckpointResult(
+                4,
+                "Do all Catch blocks contain Throw activities?",
+                "PASS" if not self.missing_throw_in_catch else "FAIL",
+                "All Catch blocks contain Throw activities."
+                if not self.missing_throw_in_catch
+                else f"Catch blocks without Throw found in: {', '.join(self.missing_throw_in_catch[:3])}..."
+            )
+        )
+
+        # CP 5: Specific Exceptions (Business / System)
         if not self.business_exceptions and not self.system_exceptions:
             status2 = "N/A"
             comment2 = "No explicit Business or System exceptions detected."
@@ -319,15 +497,64 @@ class ErrorHandlingRule(Rule):
 
         area.add_checkpoint(
             CheckpointResult(
-                2,
+                5,
                 "Are specific exceptions (Business / System) handled?",
                 status2,
                 comment2
             )
         )
-        area.add_checkpoint(CheckpointResult(3, "Are retry mechanisms used?", "N/A", "Manual review required."))
-        area.add_checkpoint(CheckpointResult(4, "Are business vs system exceptions handled?", "N/A", "Manual review required."))
-        area.add_checkpoint(CheckpointResult(5, "Are proper logging and error messages implemented?", "N/A", "Manual review required."))
+        
+        # CP 6: Retry Mechanisms
+        area.add_checkpoint(
+            CheckpointResult(
+                6,
+                "Are retry mechanisms used?",
+                "PASS" if self.retry_mechanisms else "N/A",
+                "\n".join(self.retry_mechanisms) if self.retry_mechanisms else "No retry mechanisms detected (Retry, DoWhile, While)."
+            )
+        )
+        
+        # CP 7: Business vs System Exception Handling
+        has_errors = self.incorrect_business_exception_handling or self.incorrect_system_exception_handling
+        
+        if has_errors:
+            error_lines = []
+            if self.incorrect_business_exception_handling:
+                error_lines.append("❌ Business exceptions not throwing BusinessRuleException:")
+                for item in self.incorrect_business_exception_handling[:5]:
+                    error_lines.append(f"  - {item}")
+            
+            if self.incorrect_system_exception_handling:
+                if error_lines:
+                    error_lines.append("")
+                error_lines.append("❌ System exceptions throwing BusinessRuleException:")
+                for item in self.incorrect_system_exception_handling[:5]:
+                    error_lines.append(f"  - {item}")
+            
+            comment7 = "\n".join(error_lines)
+            status7 = "FAIL"
+        else:
+            # Check if there are any catch blocks at all
+            if self.has_trycatch_blocks:
+                comment7 = "Exception handling appears correct (Business catches throw BusinessRuleException, System catches throw System exceptions)."
+                status7 = "PASS"
+            else:
+                comment7 = "No TryCatch blocks found to validate."
+                status7 = "N/A"
+        
+        area.add_checkpoint(CheckpointResult(7, "Are business vs system exceptions handled correctly?", status7, comment7))
+        
+        # CP 8: Logging in Catch Blocks
+        area.add_checkpoint(
+            CheckpointResult(
+                8,
+                "Are proper logging and error messages implemented in catch blocks?",
+                "PASS" if not self.catch_without_logging else "FAIL",
+                "All catch blocks have logging activities."
+                if not self.catch_without_logging
+                else "Catch blocks without logging:\n" + "\n".join(self.catch_without_logging)
+            )
+        )
 
         return area
 
@@ -339,15 +566,139 @@ class ErrorHandlingRule(Rule):
 class ReadabilityRule(Rule):
     def __init__(self):
         super().__init__("Readability & Maintainability")
+        self.workflows_with_annotations = []
+        self.workflows_without_annotations = []
+        self.annotations_map = {}
+        self.activity_annotations = {}  # {wf_name: {'If': [notes], 'InvokeCode': [notes]}}
+        self.missing_activity_annotations = {} # {wf_name: {'If': count, 'InvokeCode': count}}
+        self.workflows_with_comments = []
 
     def process_workflow(self, workflow_data):
-        pass
+        name = workflow_data["name"]
+        txt = workflow_data["text_content"]
+        
+        # Check for annotations in the workflow
+        # UiPath annotations typically use sads:DebugSymbol.Symbol or Annotation tags
+        has_annotations = any([
+            "sads:DebugSymbol.Symbol" in txt,
+            "<Annotation" in txt,
+            "ui:Annotation" in txt,
+            "AnnotationText=" in txt,
+            # Check for DisplayName attributes which can serve as annotations
+            'DisplayName="' in txt and not all(dn.startswith("Sequence") or dn.startswith("Flowchart") 
+                                                for dn in txt.split('DisplayName="')[1:])
+        ])
+
+        # Extract actual annotation text line by line
+        # Regex to find AnnotationText="some message"
+        found_notes = re.findall(r'AnnotationText="([^"]*)"', txt)
+        if found_notes:
+            self.annotations_map[name] = [note.strip() for note in found_notes if note.strip()]
+        
+        if has_annotations:
+            self.workflows_with_annotations.append(name)
+        else:
+            self.workflows_without_annotations.append(name)
+
+        # Extraction for Checkpoint 2 (If and Invoke Code)
+        self.activity_annotations[name] = {'If': [], 'InvokeCode': []}
+        self.missing_activity_annotations[name] = {'If': 0, 'InvokeCode': 0}
+
+        # Find If activities
+        # Pattern to find <If ...> blocks - a bit tricky with nested ones, but we mostly care about attributes
+        # Find all <If tags
+        if_tags = re.findall(r'<If\b[^>]*>', txt)
+        for tag in if_tags:
+            note_match = re.search(r'AnnotationText="([^"]*)"', tag)
+            if note_match:
+                self.activity_annotations[name]['If'].append(note_match.group(1).strip())
+            else:
+                self.missing_activity_annotations[name]['If'] += 1
+
+        # Find InvokeCode activities
+        ic_tags = re.findall(r'<(?:ui:)?InvokeCode\b[^>]*>', txt)
+        for tag in ic_tags:
+            note_match = re.search(r'AnnotationText="([^"]*)"', tag)
+            if note_match:
+                self.activity_annotations[name]['InvokeCode'].append(note_match.group(1).strip())
+            else:
+                self.missing_activity_annotations[name]['InvokeCode'] += 1
+
+        # Check for CommentOut activities
+        if "<CommentOut" in txt or "<ui:CommentOut" in txt:
+            self.workflows_with_comments.append(name)
 
     def get_result(self):
         area = AreaResult(self.category)
-        area.add_checkpoint(CheckpointResult(1, "Is the workflow easy to read?", "N/A", "Subjective."))
-        area.add_checkpoint(CheckpointResult(2, "Are comments or annotations provided?", "PASS", "Prototype assumption."))
-        area.add_checkpoint(CheckpointResult(3, "Are obsolete activities removed?", "PASS", "No commented-out activities detected."))
+        
+        # CP 1: Annotations for Readability
+        comment_parts = []
+        if self.workflows_with_annotations:
+            comment_parts.append(f"✅ {len(self.workflows_with_annotations)} workflow(s) have annotations.")
+            
+            # Add line-by-line annotations
+            for wf_name in self.workflows_with_annotations:
+                notes = self.annotations_map.get(wf_name, [])
+                if notes:
+                    comment_parts.append(f"\n📌 Annotations in `{wf_name}`:")
+                    for note in notes:
+                        comment_parts.append(f"  - {note}")
+        
+        if self.workflows_without_annotations:
+            comment_parts.append(f"\n❌ Workflows without annotations: {', '.join(self.workflows_without_annotations[:5])}{'...' if len(self.workflows_without_annotations) > 5 else ''}")
+
+        area.add_checkpoint(
+            CheckpointResult(
+                1,
+                "Are workflow-level annotations meaningful and present?",
+                "PASS" if not self.workflows_without_annotations else "FAIL",
+                "\n".join(comment_parts) if comment_parts else "No annotations detected."
+            )
+        )
+        # CP 2: Activity-level Annotations
+        activity_comment_parts = []
+        total_missing_annotations = 0
+        
+        for wf_name, data in self.activity_annotations.items():
+            wf_notes = []
+            if data['If']:
+                wf_notes.append(f"  - **If** Conditions:")
+                for note in data['If']:
+                    wf_notes.append(f"    - {note}")
+            
+            if data['InvokeCode']:
+                wf_notes.append(f"  - **Invoke Code** Activities:")
+                for note in data['InvokeCode']:
+                    wf_notes.append(f"    - {note}")
+            
+            missing = self.missing_activity_annotations.get(wf_name, {})
+            total_missing_wf = missing.get('If', 0) + missing.get('InvokeCode', 0)
+            total_missing_annotations += total_missing_wf
+            
+            if wf_notes:
+                activity_comment_parts.append(f"\n📌 Annotations in `{wf_name}`:")
+                activity_comment_parts.extend(wf_notes)
+            
+            if total_missing_wf > 0:
+                activity_comment_parts.append(f"  ⚠️ Missing annotations: {missing.get('If', 0)} If(s), {missing.get('InvokeCode', 0)} Invoke Code(s)")
+
+        area.add_checkpoint(
+            CheckpointResult(
+                2,
+                "Do If conditions and Invoke Code activities have annotations?",
+                "PASS" if total_missing_annotations == 0 else "FAIL",
+                "\n".join(activity_comment_parts) if activity_comment_parts else "No If or Invoke Code activities found."
+            )
+        )
+        area.add_checkpoint(
+            CheckpointResult(
+                3,
+                "Are obsolete activities removed?",
+                "PASS" if not self.workflows_with_comments else "FAIL",
+                "No commented-out activities detected." if not self.workflows_with_comments 
+                else f"Commented-out activities found in: {', '.join(self.workflows_with_comments[:5])}{'...' if len(self.workflows_with_comments) > 5 else ''}"
+            )
+        )
         return area
 
 

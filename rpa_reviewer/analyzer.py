@@ -10,8 +10,23 @@ from .utils import stripped_tag
 
 
 class ProjectAnalyzer:
-    def __init__(self, project_path, active_rules=None):
+    def __init__(self, project_path, active_rules=None, include_framework=True):
         self.project_path = project_path
+        self.include_framework = include_framework
+        
+        # REFramework default workflows list
+        self.framework_files = {
+            "Main.xaml",
+            "Process.xaml",
+            "InitAllSettings.xaml",
+            "InitAllApplications.xaml",
+            "CloseAllApplications.xaml",
+            "KillAllProcesses.xaml",
+            "GetTransactionData.xaml",
+            "SetTransactionStatus.xaml",
+            "RetryCurrentTransaction.xaml",
+            "TakeScreenshot.xaml"
+        }
 
         all_rules = [
             WorkflowStructureRule(),
@@ -42,6 +57,11 @@ class ProjectAnalyzer:
         for root, _, files in os.walk(self.project_path):
             for file in files:
                 if file.endswith(".xaml"):
+                    # Check if we should skip framework files
+                    if not self.include_framework and file in self.framework_files:
+                        print(f"Skipping framework file: {file}")
+                        continue
+                        
                     self._analyze_file(os.path.join(root, file))
 
         return [rule.get_result().to_dict() for rule in self.rules]

@@ -19,6 +19,7 @@ function App() {
     const [loading, setLoading] = useState(false);
     const [result, setResult] = useState(null);
     const [error, setError] = useState(null);
+    const [includeFramework, setIncludeFramework] = useState(true);
 
     const toggleRule = (id) => {
         setActiveRules(prev =>
@@ -35,7 +36,8 @@ function App() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     path,
-                    active_rules: activeRules
+                    active_rules: activeRules,
+                    include_framework: includeFramework
                 })
             });
 
@@ -98,6 +100,21 @@ function App() {
                             <span style={{ fontSize: '0.9rem' }}>{category.label}</span>
                         </label>
                     ))}
+                </div>
+
+                <div style={{ marginTop: '1.5rem', paddingTop: '1rem', borderTop: '1px solid var(--border)' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+                        <input
+                            type="checkbox"
+                            checked={includeFramework}
+                            onChange={(e) => setIncludeFramework(e.target.checked)}
+                            style={{ accentColor: 'var(--accent)', width: '1.2rem', height: '1.2rem' }}
+                        />
+                        <span style={{ fontSize: '0.9rem', fontWeight: '500' }}>Include REFramework default workflows</span>
+                    </label>
+                    <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginLeft: '1.95rem', marginTop: '0.25rem' }}>
+                        If disabled, files like Main.xaml, Process.xaml, and InitAllSettings.xaml will be skipped.
+                    </p>
                 </div>
 
                 {error && <div style={{ color: 'var(--danger)', marginTop: '1rem' }}>⚠️ {error}</div>}
