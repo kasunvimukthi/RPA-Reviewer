@@ -150,7 +150,7 @@ function App() {
                                                     {cp.status}
                                                 </span>
                                             </td>
-                                            <td style={{ padding: '0.75rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                                            <td style={{ padding: '0.75rem', color: 'var(--text-secondary)', fontSize: '0.9rem', whiteSpace: 'pre-line' }}>
                                                 {cp.comment}
                                             </td>
                                         </tr>

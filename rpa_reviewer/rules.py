@@ -236,24 +236,37 @@ class ErrorHandlingRule(Rule):
         name = workflow_data["name"]
         txt = workflow_data["text_content"]
 
-        # Existing check
+        # Rule 1: Invoke without Try-Catch
         if "InvokeWorkflowFile" in txt and "TryCatch" not in txt:
             self.missing_trycatch.append(name)
 
-        # --------------------------------------------------
-        # Extract Throw exception type + message
-        # --------------------------------------------------
-        throw_matches = re.findall(
+        # ==================================================
+        # Pattern 1: Attribute-based Throw
+        # <Throw Exception="[New BusinessRuleException("msg")]"/>
+        # ==================================================
+        attr_matches = re.findall(
             r'<Throw[^>]+Exception="\[New\s+([A-Za-z0-9_.]+)\((.*?)\)\]"',
             txt,
             re.DOTALL
         )
 
-        for exc_type, raw_msg in throw_matches:
+        # ==================================================
+        # Pattern 2: CSharpValue-based Throw
+        # <CSharpValue>new BusinessRuleException("msg")</CSharpValue>
+        # ==================================================
+        csharp_matches = re.findall(
+            r'<CSharpValue[^>]*>\s*new\s+([A-Za-z0-9_.]+)\((.*?)\)\s*</CSharpValue>',
+            txt,
+            re.DOTALL
+        )
+
+        all_matches = attr_matches + csharp_matches
+
+        for exc_type, raw_msg in all_matches:
             # Clean message
             msg = raw_msg.replace("&quot;", "").strip()
 
-            # Remove variable concatenations
+            # Remove concatenations / variables
             msg = re.sub(r'\+.*?\+', ' <dynamic> ', msg)
             msg = re.sub(r'\s+', ' ', msg)
 
