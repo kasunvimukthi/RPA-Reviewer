@@ -1,15 +1,18 @@
 import os
 import json
 import xml.etree.ElementTree as ET
+import re
 from .rules import (
-    WorkflowStructureRule, VariableArgumentRule, ErrorHandlingRule, 
+    WorkflowStructureRule, VariableArgumentRule, ErrorHandlingRule,
     ReadabilityRule, SecurityRule, TestingDebuggingRule, DependencyRule
 )
-from .utils import stripped_tag, get_namespaces
+from .utils import stripped_tag
+
 
 class ProjectAnalyzer:
     def __init__(self, project_path, active_rules=None):
         self.project_path = project_path
+
         all_rules = [
             WorkflowStructureRule(),
             VariableArgumentRule(),
@@ -19,105 +22,124 @@ class ProjectAnalyzer:
             TestingDebuggingRule(),
             DependencyRule()
         ]
-        
+
         if active_rules:
             self.rules = [r for r in all_rules if r.category in active_rules]
         else:
             self.rules = all_rules
-            
-        self.issues = []
 
     def analyze(self):
         print(f"Analyzing project at: {self.project_path}")
-        
+
         project_json_path = os.path.join(self.project_path, "project.json")
-        project_meta = {}
         if os.path.exists(project_json_path):
             try:
-                with open(project_json_path, 'r', encoding='utf-8') as f:
-                    project_meta = json.load(f)
+                with open(project_json_path, "r", encoding="utf-8") as f:
+                    json.load(f)
             except Exception as e:
                 print(f"Error reading project.json: {e}")
 
-        for root, dirs, files in os.walk(self.project_path):
+        for root, _, files in os.walk(self.project_path):
             for file in files:
                 if file.endswith(".xaml"):
-                   self._analyze_file(os.path.join(root, file), project_meta)
-        
-        # Collect Results
-        results = []
-        for rule in self.rules:
-            results.append(rule.get_result().to_dict())
-            
-        return results
+                    self._analyze_file(os.path.join(root, file))
 
-    def _analyze_file(self, file_path, project_meta):
+        return [rule.get_result().to_dict() for rule in self.rules]
+
+    def _analyze_file(self, file_path):
         try:
             tree = ET.parse(file_path)
             root = tree.getroot()
-            
-            with open(file_path, 'r', encoding='utf-8') as f:
+
+            with open(file_path, "r", encoding="utf-8") as f:
                 text_content = f.read()
 
             filename = os.path.basename(file_path)
-            
+
+            # -------------------------------------------------
             # Extract Variables
+            # -------------------------------------------------
             variables = []
             for elem in root.iter():
                 if "Variables" in stripped_tag(elem.tag):
                     for var_elem in elem:
                         if "Variable" in stripped_tag(var_elem.tag):
-                            name = var_elem.attrib.get('Name') or var_elem.attrib.get('{http://schemas.microsoft.com/winfx/2006/xaml}Name')
+                            name = (
+                                var_elem.attrib.get("Name")
+                                or var_elem.attrib.get("{http://schemas.microsoft.com/winfx/2006/xaml}Name")
+                            )
                             if name:
-                                variables.append({'name': name, 'type': var_elem.attrib.get('TypeArguments')})
+                                variables.append({
+                                    "name": name,
+                                    "type": var_elem.attrib.get("TypeArguments")
+                                })
 
+            # -------------------------------------------------
             # Extract Arguments
+            # -------------------------------------------------
             arguments = []
             for members in root.iter():
-                 if "Members" in stripped_tag(members.tag):
-                     for prop in members:
-                         if "Property" in stripped_tag(prop.tag):
-                             name = prop.attrib.get('Name')
-                             type_attr = prop.attrib.get('Type')
-                             direction = "InArgument"
-                             if "OutArgument" in str(type_attr): direction = "OutArgument"
-                             elif "InOutArgument" in str(type_attr): direction = "InOutArgument"
-                             
-                             if name:
-                                 arguments.append({'name': name, 'direction': direction})
+                if "Members" in stripped_tag(members.tag):
+                    for prop in members:
+                        if "Property" in stripped_tag(prop.tag):
+                            name = prop.attrib.get("Name")
+                            type_attr = prop.attrib.get("Type")
 
-            # Extract Activities (filtered)
-            IGNORE_TAGS = {
-                "Sequence",
-                "Flowchart",
-                "StateMachine",
-                "Members",
-                "Variable",
-                "Property",
-                "VisualBasic.Settings",
-                "TextExpression.ReferencesForImplementation"
-            }
+                            direction = "InArgument"
+                            if "OutArgument" in str(type_attr):
+                                direction = "OutArgument"
+                            elif "InOutArgument" in str(type_attr):
+                                direction = "InOutArgument"
 
+                            if name:
+                                arguments.append({
+                                    "name": name,
+                                    "direction": direction
+                                })
+
+            # -------------------------------------------------
+            # Extract Activities (DisplayName-based – correct)
+            # -------------------------------------------------
             activities = []
+            for elem in root.iter():
+                display_name = elem.attrib.get("DisplayName")
+                if display_name:
+                    activities.append({
+                        "type": stripped_tag(elem.tag),
+                        "display_name": display_name
+                    })
+
+            # -------------------------------------------------
+            # Extract USED variable / argument names
+            # -------------------------------------------------
+            used_names = set()
+
             for elem in root.iter():
                 tag = stripped_tag(elem.tag)
 
-                if tag in IGNORE_TAGS:
-                    continue
+                # C# expressions
+                if tag in {"CSharpReference", "CSharpValue"} and elem.text:
+                    used_names.update(
+                        re.findall(r'\b[A-Za-z_][A-Za-z0-9_]*\b', elem.text)
+                    )
 
-                activities.append({'type': tag})
+                # VB expressions (future-proof)
+                if tag in {"VisualBasicReference", "VisualBasicValue"} and elem.text:
+                    used_names.update(
+                        re.findall(r'\b[A-Za-z_][A-Za-z0-9_]*\b', elem.text)
+                    )
 
             workflow_data = {
-                'name': filename,
-                'path': file_path,
-                'variables': variables,
-                'arguments': arguments,
-                'activities': activities,
-                'text_content': text_content,
-                'tree': tree
+                "name": filename,
+                "path": file_path,
+                "variables": variables,
+                "arguments": arguments,
+                "activities": activities,
+                "used_names": used_names,
+                "text_content": text_content,
+                "tree": tree
             }
 
-            # Run Process Workflow for each rule
             for rule in self.rules:
                 rule.process_workflow(workflow_data)
 

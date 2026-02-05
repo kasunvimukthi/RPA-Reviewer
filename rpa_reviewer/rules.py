@@ -67,12 +67,23 @@ class WorkflowStructureRule(Rule):
         if len(workflow_data["activities"]) > 120:
             self.modular_fail_files.append(name)
 
-        # CP2: Deep Nesting
-        activity_types = [a["type"] for a in workflow_data["activities"]]
-        if_count = activity_types.count("If")
-        sequence_count = activity_types.count("Sequence")
+        # CP2: Deep Nesting (UiPath-aware)
 
-        if if_count > 3 or sequence_count > 3:
+        if_count = 0
+        sequence_count = 0
+
+        for act in workflow_data["activities"]:
+            act_type = act["type"]
+            display = act["display_name"]
+
+            if act_type == "If":
+                if_count += 1
+
+            # Count only meaningful sequences (ignore default containers)
+            elif act_type == "Sequence" and not display.lower().startswith("sequence"):
+                sequence_count += 1
+
+        if if_count > 3 or sequence_count > 30:
             self.nested_fail_files.append(
                 f"{name} (If: {if_count}, Sequence: {sequence_count})"
             )
@@ -141,57 +152,50 @@ class VariableArgumentRule(Rule):
         self.naming_fails = []
         self.unused_fails = []
 
-    # ---------- Helpers ----------
+    # ---------- Naming helpers ----------
 
     def _is_valid_variable_name(self, name):
-        if "_" not in name:
-            return False
-        if len(name) >= 25:
+        if "_" not in name or len(name) >= 25:
             return False
 
         prefix, var = name.split("_", 1)
-
-        if prefix not in self.ALLOWED_TYPES:
-            return False
-        if not var or not var[0].isupper():
-            return False
-
-        return True
+        return prefix in self.ALLOWED_TYPES and var and var[0].isupper()
 
     def _is_valid_argument_name(self, name, direction):
         if len(name) >= 25:
             return False
 
-        expected_prefix = {
-            "InArgument": "in_",
-            "OutArgument": "out_",
-            "InOutArgument": "io_"
-        }.get(direction)
-
-        if not expected_prefix:
-            return False
-
-        return name.startswith(expected_prefix)
+        return {
+            "InArgument": name.startswith("in_"),
+            "OutArgument": name.startswith("out_"),
+            "InOutArgument": name.startswith("io_")
+        }.get(direction, False)
 
     # ---------- Processing ----------
 
     def process_workflow(self, workflow_data):
         wf_name = workflow_data["name"]
-        text = workflow_data["text_content"]
+        used_names = workflow_data.get("used_names", set())
 
         # Variables
         for var in workflow_data["variables"]:
-            if not self._is_valid_variable_name(var["name"]):
-                self.naming_fails.append(f"{wf_name}:{var['name']}")
+            var_name = var["name"]
 
-            # Unused variable heuristic
-            if text.count(var["name"]) <= 1:
-                self.unused_fails.append(f"{wf_name}:{var['name']}")
+            if not self._is_valid_variable_name(var_name):
+                self.naming_fails.append(f"{wf_name}:{var_name}")
+
+            if var_name not in used_names:
+                self.unused_fails.append(f"{wf_name}:{var_name}")
 
         # Arguments
         for arg in workflow_data["arguments"]:
-            if not self._is_valid_argument_name(arg["name"], arg["direction"]):
-                self.naming_fails.append(f"{wf_name}:{arg['name']}")
+            arg_name = arg["name"]
+
+            if not self._is_valid_argument_name(arg_name, arg["direction"]):
+                self.naming_fails.append(f"{wf_name}:{arg_name}")
+
+            if arg_name not in used_names:
+                self.unused_fails.append(f"{wf_name}:{arg_name}")
 
     def get_result(self):
         area = AreaResult(self.category)
@@ -212,9 +216,9 @@ class VariableArgumentRule(Rule):
                 2,
                 "Are unused variables and arguments removed?",
                 "PASS" if not self.unused_fails else "FAIL",
-                "No unused variables detected."
+                "No unused variables or arguments detected."
                 if not self.unused_fails
-                else f"Unused variables found: {', '.join(self.unused_fails[:3])}..."
+                else f"Unused items found:\n" + "\n".join(self.unused_fails[:5])
             )
         )
 
