@@ -716,15 +716,36 @@ class SecurityRule(Rule):
         name = workflow_data["name"]
         txt = workflow_data["text_content"]
 
-        if re.search(r'Password.*"[^"]+"', txt, re.IGNORECASE):
+        # Improved Password detection: 
+        # Look for attributes like Password="...", SecurePassword="...", etc.
+        # Exclude {x:Null}
+        # re.search(r'(?:Password|SecurePassword|Credential)\b\s*=\s*"((?!\{x:Null\})[^"]+)"', txt, re.IGNORECASE)
+        # Note: We use findall to look for any non-null match or manually filter
+        pw_pattern = r'(?:Password|SecurePassword|Credential)\b\s*=\s*"([^"]+)"'
+        found_pws = re.findall(pw_pattern, txt, re.IGNORECASE)
+        
+        has_real_pw = False
+        for pw in found_pws:
+            if pw.strip().lower() != "{x:null}":
+                has_real_pw = True
+                break
+        
+        if has_real_pw:
             self.hardcoded_pw.append(name)
 
+        # Improved URL detection
         for line in txt.splitlines():
-            if "xmlns" in line or "http://schemas." in line:
+            # Skip namespace definitions
+            if "xmlns" in line or "http://schemas." in line or "mc:Ignorable" in line:
                 continue
-            if re.search(r'"https?://[^"]+"', line):
-                self.hardcoded_url.append(name)
-                break
+            
+            # Find URLs in quotes
+            url_matches = re.findall(r'"(https?://[^"]+)"', line)
+            for url in url_matches:
+                # Basic check to skip common framework URLs if any were missed by the line check
+                if "schemas.uipath.com" not in url and "schemas.microsoft.com" not in url:
+                    self.hardcoded_url.append(name)
+                    return # Found a URL in this workflow, move to next
 
     def get_result(self):
         area = AreaResult(self.category)
@@ -757,27 +778,93 @@ class TestingDebuggingRule(Rule):
     def __init__(self):
         super().__init__("Testing & Debugging")
         self.debug_activities = []
+        self.breakpoints = {} # {workflow_name: [activity_names]}
+        self.hardcoded_test_data = {} # {workflow_name: [descriptions]}
 
     def process_workflow(self, workflow_data):
+        name = workflow_data["name"]
+        txt = workflow_data["text_content"]
         types = [a["type"] for a in workflow_data["activities"]]
         if "WriteLine" in types:
-            self.debug_activities.append(workflow_data["name"])
+            self.debug_activities.append(name)
+
+        # Rule 3: Hardcoded Test Data in Variables/Arguments
+        findings = []
+
+        # Check for Variable Default values
+        var_default_pattern = r'<Variable[^>]*Name="([^"]+)"[^>]*>.*?<Variable\.Default>(.*?)</Variable\.Default>'
+        var_defaults = re.findall(var_default_pattern, txt, re.DOTALL)
+        for var_name, default_content in var_defaults:
+            # Skip if it's a C# or VB expression
+            if any(tag in default_content for tag in ["CSharpValue", "CSharpReference", "VisualBasicValue", "VisualBasicReference"]):
+                continue
+                
+            if default_content.strip():
+                literal_match = re.search(r'<Literal[^>]*>(.*?)</Literal>', default_content)
+                val = literal_match.group(1) if literal_match else "expression"
+                findings.append(f"Variable `{var_name}` has default value: `{val}`")
+
+        # Check for Argument hardcoded values
+        arg_pattern = r'<(InArgument|OutArgument|InOutArgument)[^>]*x:Key="([^"]+)"[^>]*>(.+?)</\1>'
+        args = re.findall(arg_pattern, txt, re.DOTALL)
+        for arg_type, arg_key, arg_val in args:
+            # Skip if it's a C# or VB expression
+            if any(tag in arg_val for tag in ["CSharpValue", "CSharpReference", "VisualBasicValue", "VisualBasicReference"]):
+                continue
+                
+            if arg_val.strip() and not arg_val.startswith("["):
+                literal_match = re.search(r'<Literal[^>]*>(.*?)</Literal>', arg_val)
+                val = literal_match.group(1) if literal_match else arg_val.strip()
+                findings.append(f"Argument `{arg_key}` has hardcoded value: `{val}`")
+
+        if findings:
+            self.hardcoded_test_data[name] = findings
 
     def get_result(self):
         area = AreaResult(self.category)
 
         area.add_checkpoint(CheckpointResult(1, "Has the workflow been tested?", "N/A", "External verification required."))
+        
+        # CP 2: Breakpoints and Debug logs
+        comment_parts = []
+        if self.debug_activities:
+            comment_parts.append(f"❌ WriteLine activities found in: {', '.join(self.debug_activities)}")
+        
+        if self.breakpoints:
+            comment_parts.append("\n❌ Active breakpoints found:")
+            for wf, activities in self.breakpoints.items():
+                comment_parts.append(f"📌 {wf}:")
+                for activity in activities:
+                    comment_parts.append(f"  - {activity}")
+        
+        status = "PASS" if not self.debug_activities and not self.breakpoints else "FAIL"
+        comment = "\n".join(comment_parts) if comment_parts else "No debug activities or breakpoints found."
+
         area.add_checkpoint(
             CheckpointResult(
                 2,
                 "Are breakpoints and debug logs removed?",
-                "PASS" if not self.debug_activities else "FAIL",
-                "No debug activities found."
-                if not self.debug_activities
-                else f"WriteLine detected in: {', '.join(self.debug_activities)}"
+                status,
+                comment
             )
         )
-        area.add_checkpoint(CheckpointResult(3, "Are test data cleaned?", "N/A", "Manual review required."))
+        # CP 3: Test Data Cleaning
+        test_data_comment_parts = []
+        if self.hardcoded_test_data:
+            test_data_comment_parts.append("❌ Hardcoded test data found:")
+            for wf, issues in self.hardcoded_test_data.items():
+                test_data_comment_parts.append(f"📌 {wf}:")
+                for issue in issues:
+                    test_data_comment_parts.append(f"  - {issue}")
+        
+        area.add_checkpoint(
+            CheckpointResult(
+                3,
+                "Are test data cleaned?",
+                "PASS" if not self.hardcoded_test_data else "FAIL",
+                "\n".join(test_data_comment_parts) if test_data_comment_parts else "No hardcoded test data found."
+            )
+        )
 
         return area
 
@@ -789,12 +876,34 @@ class TestingDebuggingRule(Rule):
 class DependencyRule(Rule):
     def __init__(self):
         super().__init__("Dependencies & Settings")
+        self.project_dependencies = {} # {name: version}
+        self.used_dependencies = set()
 
     def process_workflow(self, workflow_data):
-        pass
+        txt = workflow_data["text_content"]
+        for dep_name in self.project_dependencies.keys():
+            if dep_name in self.used_dependencies:
+                continue
+            if dep_name in txt or dep_name.replace(".Activities", "") in txt:
+                self.used_dependencies.add(dep_name)
 
     def get_result(self):
         area = AreaResult(self.category)
-        area.add_checkpoint(CheckpointResult(1, "Are dependencies optimized?", "PASS", "Dependencies appear valid."))
-        area.add_checkpoint(CheckpointResult(2, "Are project settings configured?", "PASS", "Project settings valid."))
+        # CP 1: Unused Dependencies
+        core_deps = {"UiPath.System.Activities", "UiPath.UIAutomation.Activities"}
+        unused = [dep for dep in self.project_dependencies.keys() if dep not in self.used_dependencies and dep not in core_deps]
+        
+        status = "PASS" if not unused else "FAIL"
+        comment = "Dependencies appear valid and optimized." if not unused \
+                  else f"Potentially unused dependencies detected (not referenced in XAML): {', '.join(unused)}"
+        
+        area.add_checkpoint(
+            CheckpointResult(
+                1, 
+                "Are dependencies optimized?", 
+                status, 
+                comment
+            )
+        )
+        area.add_checkpoint(CheckpointResult(2, "Are project settings configured?", "N/A", "External verification required."))
         return area

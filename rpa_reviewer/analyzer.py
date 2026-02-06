@@ -44,15 +44,50 @@ class ProjectAnalyzer:
             self.rules = all_rules
 
     def analyze(self):
-        print(f"Analyzing project at: {self.project_path}")
+        # -------------------------------------------------
+        # Check for Breakpoints in .local/ProjectSettings.json
+        # -------------------------------------------------
+        settings_path = os.path.join(self.project_path, ".local", "ProjectSettings.json")
+        if os.path.exists(settings_path):
+            try:
+                with open(settings_path, "r", encoding="utf-8") as f:
+                    settings_data = json.load(f)
+                
+                bp_str = settings_data.get("ProjectBreakpoints")
+                if bp_str:
+                    bp_data = json.loads(bp_str)
+                    bp_values = bp_data.get("Value", {})
+                    
+                    for rule in self.rules:
+                        if isinstance(rule, TestingDebuggingRule):
+                            for xaml_path, bp_list in bp_values.items():
+                                if bp_list:
+                                    # Extract activity names for enabled breakpoints
+                                    active_bps = [bp.get("ActivityName", "Unknown") for bp in bp_list if bp.get("IsEnabled", True)]
+                                    if active_bps:
+                                        rule.breakpoints[xaml_path] = active_bps
+            except Exception as e:
+                print(f"Error reading ProjectSettings.json for breakpoints: {e}")
 
+        # -------------------------------------------------
+        # Get Project Dependencies from project.json
+        # -------------------------------------------------
         project_json_path = os.path.join(self.project_path, "project.json")
         if os.path.exists(project_json_path):
             try:
                 with open(project_json_path, "r", encoding="utf-8") as f:
-                    json.load(f)
+                    project_data = json.load(f)
+                
+                dependencies = project_data.get("dependencies", {})
+                if dependencies:
+                    for rule in self.rules:
+                        if isinstance(rule, DependencyRule):
+                            rule.project_dependencies = dependencies
             except Exception as e:
                 print(f"Error reading project.json: {e}")
+
+        # Remove old .local/AllDependencies.json logic as requested by user
+        # (It's gone in this version)
 
         for root, _, files in os.walk(self.project_path):
             for file in files:
